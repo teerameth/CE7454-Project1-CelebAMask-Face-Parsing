@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchvision.models.mobilenetv3 import mobilenet_v3_small
+
 
 # Simple Network
 class SimpleSegmentationNet(nn.Module):
@@ -21,70 +23,356 @@ class SimpleSegmentationNet(nn.Module):
         x = F.relu(self.conv4(x))
         x = F.interpolate(x, scale_factor=4, mode='bilinear', align_corners=False)
         x = self.conv5(x)
+        return x
+
+################
+
+class LightweightASPP(nn.Module):
+    def __init__(self, in_channels, out_channels, atrous_rates):
+        super(LightweightASPP, self).__init__()
+        modules = []
+        modules.append(nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, 1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)))
+
+        for rate in atrous_rates:
+            modules.append(nn.Sequential(
+                nn.Conv2d(in_channels, in_channels, 3, padding=rate, dilation=rate, groups=in_channels, bias=False),
+                nn.BatchNorm2d(in_channels),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(in_channels, out_channels, 1, bias=False),
+                nn.BatchNorm2d(out_channels),
+                nn.ReLU(inplace=True)))
+
+        self.convs = nn.ModuleList(modules)
+
+    def forward(self, x):
+        res = []
+        for conv in self.convs:
+            res.append(conv(x))
+        res = torch.cat(res, dim=1)
+        return res
+
+class LightweightDeepLabV3(nn.Module):
+    def __init__(self, num_classes):
+        super(LightweightDeepLabV3, self).__init__()
+
+        # Use the smallest MobileNetV3 as backbone with width multiplier 0.5
+        self.backbone = mobilenet_v3_small(weights=None, width_mult=1.0)
+
+        # Remove the classifier and pooling layers
+        self.backbone = nn.Sequential(*list(self.backbone.children())[:-2])
+
+        # Get the number of features from the last layer of the backbone
+        backbone_out_features = self.backbone[-1][-1].out_channels
+
+        # Lightweight ASPP module
+        aspp_out_channels = 256
+        self.aspp = LightweightASPP(backbone_out_features, aspp_out_channels, [12, 24, 36])
+
+        # Final classification layer
+        self.classifier = nn.Sequential(
+            nn.Conv2d(aspp_out_channels * 4, aspp_out_channels * 4, 3, padding=1, groups=aspp_out_channels * 4,
+                      bias=False),
+            nn.BatchNorm2d(aspp_out_channels * 4),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(aspp_out_channels * 4, num_classes, 1)
+        )
+
+        # Initialize weights
+        self._init_weights()
+
+    def forward(self, x):
+        input_shape = x.shape[-2:]
+
+        # Extract features
+        features = self.backbone(x)
+
+        # Apply ASPP
+        x = self.aspp(features)
+
+        # Apply classifier
+        x = self.classifier(x)
+
+        # Upsample the output to match input resolution
+        x = nn.functional.interpolate(x, size=input_shape, mode='bilinear', align_corners=False)
 
         return x
 
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+################
+class EnhancedLightweightASPP(nn.Module):
+    def __init__(self, in_channels, out_channels, atrous_rates):
+        super(EnhancedLightweightASPP, self).__init__()
 
-class DoubleConv(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super().__init__()
-        self.double_conv = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, 1, bias=False),
             nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
+
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(in_channels, in_channels, 3, padding=1, groups=in_channels, bias=False),
+            nn.BatchNorm2d(in_channels),
             nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
+            nn.Conv2d(in_channels, out_channels, 1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
+
+        self.branches = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv2d(in_channels, in_channels, 3, padding=rate, dilation=rate, groups=in_channels, bias=False),
+                nn.BatchNorm2d(in_channels),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(in_channels, out_channels, 1, bias=False),
+                nn.BatchNorm2d(out_channels),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(out_channels, out_channels, 3, padding=1, groups=out_channels, bias=False),
+                nn.BatchNorm2d(out_channels),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(out_channels, out_channels, 1, bias=False),
+                nn.BatchNorm2d(out_channels),
+                nn.ReLU(inplace=True)
+            ) for rate in atrous_rates
+        ])
+
+        self.global_avg_pool = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(in_channels, out_channels, 1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
+
+        self.output_conv = nn.Sequential(
+            nn.Conv2d(out_channels * (len(atrous_rates) + 3), out_channels, 1, bias=False),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True)
         )
 
     def forward(self, x):
-        return self.double_conv(x)
+        res = [self.conv1(x), self.conv2(x)]
+        res.extend([branch(x) for branch in self.branches])
+
+        global_features = self.global_avg_pool(x)
+        global_features = nn.functional.interpolate(global_features,
+                                                    size=x.shape[2:],
+                                                    mode='bilinear',
+                                                    align_corners=False)
+        res.append(global_features)
+
+        res = torch.cat(res, dim=1)
+        return self.output_conv(res)
 
 
-class UNet(nn.Module):
+class EnhancedLightweightDeepLabV3(nn.Module):
     def __init__(self, num_classes):
-        super(UNet, self).__init__()
-        self.encoder = nn.ModuleList([
-            DoubleConv(3, 64),
-            DoubleConv(64, 128),
-            DoubleConv(128, 256),
-            DoubleConv(256, 512),
-        ])
-        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.bottleneck = DoubleConv(512, 1024)
-        self.decoder = nn.ModuleList([
-            nn.ConvTranspose2d(1024, 512, kernel_size=2, stride=2),
-            nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2),
-            nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2),
-            nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2),
-        ])
-        self.decoder_conv = nn.ModuleList([
-            DoubleConv(1024, 512),
-            DoubleConv(512, 256),
-            DoubleConv(256, 128),
-            DoubleConv(128, 64),
-        ])
-        self.final_conv = nn.Conv2d(64, num_classes, kernel_size=1)
+        super(EnhancedLightweightDeepLabV3, self).__init__()
+
+        # Use the smallest MobileNetV3 as backbone with width multiplier 0.5
+        self.backbone = mobilenet_v3_small(weights=None, width_mult=0.75)
+
+        # Remove the classifier and pooling layers
+        self.backbone = nn.Sequential(*list(self.backbone.children())[:-2])
+
+        # Get the number of features from the last layer of the backbone
+        backbone_out_features = self.backbone[-1][-1].out_channels
+
+        # Enhanced Lightweight ASPP module
+        aspp_out_channels = 256
+        self.aspp = EnhancedLightweightASPP(backbone_out_features, aspp_out_channels, [12, 24, 36])
+
+        # Final classification layer
+        self.classifier = nn.Sequential(
+            nn.Conv2d(aspp_out_channels, aspp_out_channels, 3, padding=1, groups=aspp_out_channels, bias=False),
+            nn.BatchNorm2d(aspp_out_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(aspp_out_channels, aspp_out_channels, 1, bias=False),
+            nn.BatchNorm2d(aspp_out_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(aspp_out_channels, num_classes, 1)
+        )
+
+        # Initialize weights
+        self._init_weights()
 
     def forward(self, x):
-        skip_connections = []
-        for down in self.encoder:
-            x = down(x)
-            skip_connections.append(x)
-            x = self.pool(x)
+        input_shape = x.shape[-2:]
 
-        x = self.bottleneck(x)
+        # Extract features
+        features = self.backbone(x)
 
-        for i, (up, conv) in enumerate(zip(self.decoder, self.decoder_conv)):
-            x = up(x)
-            skip = skip_connections[-(i + 1)]
+        # Apply ASPP
+        x = self.aspp(features)
 
-            # Ensure correct size for concatenation
-            if x.shape != skip.shape:
-                x = nn.functional.interpolate(x, size=skip.shape[2:], mode='bilinear', align_corners=True)
+        # Apply classifier
+        x = self.classifier(x)
 
-            x = torch.cat([x, skip], dim=1)
-            x = conv(x)
+        # Upsample the output to match input resolution
+        x = nn.functional.interpolate(x, size=input_shape, mode='bilinear', align_corners=False)
 
-        return self.final_conv(x)
+        return x
 
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+#################
+class ConfigurableEnhancedLightweightASPP(nn.Module):
+    def __init__(self, in_channels, out_channels, base_rate=6, depth=3, dropout_rate=0.1):
+        super(ConfigurableEnhancedLightweightASPP, self).__init__()
+
+        atrous_rates = [base_rate * (i + 1) for i in range(depth)]
+
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, 1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Dropout2d(dropout_rate)
+        )
+
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(in_channels, in_channels, 3, padding=1, groups=in_channels, bias=False),
+            nn.BatchNorm2d(in_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(in_channels, out_channels, 1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Dropout2d(dropout_rate)
+        )
+
+        self.branches = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv2d(in_channels, in_channels, 3, padding=rate, dilation=rate, groups=in_channels, bias=False),
+                nn.BatchNorm2d(in_channels),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(in_channels, out_channels, 1, bias=False),
+                nn.BatchNorm2d(out_channels),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(out_channels, out_channels, 3, padding=1, groups=out_channels, bias=False),
+                nn.BatchNorm2d(out_channels),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(out_channels, out_channels, 1, bias=False),
+                nn.BatchNorm2d(out_channels),
+                nn.ReLU(inplace=True),
+                nn.Dropout2d(dropout_rate)
+            ) for rate in atrous_rates
+        ])
+
+        self.global_avg_pool = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(in_channels, out_channels, 1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Dropout2d(dropout_rate)
+        )
+
+        self.output_conv = nn.Sequential(
+            nn.Conv2d(out_channels * (depth + 3), out_channels, 1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Dropout2d(dropout_rate)
+        )
+
+    def forward(self, x):
+        res = [self.conv1(x), self.conv2(x)]
+        res.extend([branch(x) for branch in self.branches])
+
+        global_features = self.global_avg_pool(x)
+        global_features = F.interpolate(global_features, size=x.shape[2:], mode='bilinear', align_corners=False)
+        res.append(global_features)
+
+        res = torch.cat(res, dim=1)
+        return self.output_conv(res)
+
+class ConfigurableEnhancedLightweightDeepLabV3(nn.Module):
+    def __init__(self,
+                 num_classes,
+                 base_rate=6,
+                 atrous_depth=3,
+                 aspp_output_channels=256,
+                 backbone_removed_layers=0,
+                 backbone_width_multiplier=1.0,
+                 dropout_rate=0.1):
+        super(ConfigurableEnhancedLightweightDeepLabV3, self).__init__()
+
+        self.num_classes = num_classes
+
+        # Use the smallest MobileNetV3 as backbone with width multiplier
+        mobilenet = mobilenet_v3_small(weights=None, width_mult=backbone_width_multiplier).features
+
+        self.backbone = nn.Sequential()
+        for i_layer in range(12-backbone_removed_layers):
+            self.backbone.add_module(str(i_layer), mobilenet[i_layer])
+
+        # Remove the classifier and pooling layers
+        # self.backbone = nn.Sequential(*list(self.backbone.children())[:-2])
+
+        # Get the number of features from the last layer of the backbone
+        backbone_out_features = self.backbone[-1].out_channels
+
+        # Enhanced Lightweight ASPP module
+        aspp_output_channels = aspp_output_channels
+        self.aspp = ConfigurableEnhancedLightweightASPP(backbone_out_features,
+                                                        aspp_output_channels,
+                                                        base_rate,
+                                                        atrous_depth,
+                                                        dropout_rate)
+
+        # Final classification layer
+        self.classifier = nn.Sequential(
+            nn.Conv2d(aspp_output_channels, aspp_output_channels, 3, padding=1, groups=aspp_output_channels, bias=False),
+            nn.BatchNorm2d(aspp_output_channels),
+            nn.ReLU(inplace=True),
+            nn.Dropout2d(dropout_rate),
+            nn.Conv2d(aspp_output_channels, aspp_output_channels, 1, bias=False),
+            nn.BatchNorm2d(aspp_output_channels),
+            nn.ReLU(inplace=True),
+            nn.Dropout2d(dropout_rate),
+            nn.Conv2d(aspp_output_channels, num_classes, 1)
+        )
+
+        # Initialize weights
+        self._init_weights()
+
+    def forward(self, x):
+        input_shape = x.shape[-2:]
+
+        # Extract features
+        features = self.backbone(x)
+
+        # Apply ASPP
+        x = self.aspp(features)
+
+        # Apply classifier
+        x = self.classifier(x)
+
+        # Upsample the output to match input resolution
+        x = F.interpolate(x, size=input_shape, mode='bilinear', align_corners=False)
+
+        return x  # Return raw predictions for training
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)

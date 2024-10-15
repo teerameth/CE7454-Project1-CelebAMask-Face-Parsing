@@ -6,3 +6,5 @@ opencv-python
 pillow
 albumentations
 tqdm
+wandb
+#pytorch-crf
