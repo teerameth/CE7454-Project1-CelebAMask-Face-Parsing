@@ -256,7 +256,8 @@ def grid_search():
                                                              dropout_rate=config.dropout_rate)
             param_count = count_parameters(model)
             print(f"Param Count: {param_count}")
-            wandb.log({"param_count": param_count})
+            wandb.log({"param_count": param_count,
+                       "backbone_width_multiplier": backbone_width_multiplier})
             if param_count > _max_param_count:  # Invalid model (too large), skip training
                 print("Can't find valid model size")
                 wandb.log({
