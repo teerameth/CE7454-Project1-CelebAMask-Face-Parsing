@@ -1,14 +1,13 @@
 import torch
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
-import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
 from torch.utils.data import DataLoader
-from utils import SegmentationDataset, LovaszSoftmax
+from utils import SegmentationDataset
 import lovasz_losses as L
-import numpy as np
 
+from model import MobileNetV3ASPP
 # Data Augmentation
 train_transform = A.Compose([
                 A.HorizontalFlip(always_apply=None, p=0.5), # Face image already aligned, no need for vertical flip or rotation
@@ -55,18 +54,12 @@ val_dataset = SegmentationDataset(
 
 # Create model, loss function, and optimizer
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-# model = SimpleSegmentationNet().to(device)
-# model = CustomDeepLabV3(num_classes=19).to(device)
-# model = LightweightDeepLabV3(num_classes=19).to(device)
-
-from model import EnhancedLightweightDeepLabV3, ConfigurableEnhancedLightweightDeepLabV3
-# model = EnhancedLightweightDeepLabV3(num_classes=19).to(device)
-model = ConfigurableEnhancedLightweightDeepLabV3(num_classes=19, base_rate=2, atrous_depth=4).to(device)
+model = MobileNetV3ASPP(num_classes=19, base_rate=2, atrous_depth=4).to(device)
 # Check parameter count
 param_count = sum(p.numel() for p in model.parameters())
 print(f"Total trainable parameters: {param_count}")
 
-criterion = LovaszSoftmax()
+criterion = L.lovasz_softmax
 optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,
                                                        mode='min',
@@ -85,8 +78,8 @@ def train_one_epoch(model, loader, optimizer, criterion, device):
         outputs = model(images)
 
         out = F.softmax(outputs, dim=1)
-        loss = L.lovasz_softmax(out, masks)
-        # loss = criterion(outputs, masks)
+        # loss = L.lovasz_softmax(out, masks)
+        loss = criterion(out, masks)
         loss.backward()
         optimizer.step()
 
@@ -106,16 +99,16 @@ def validate(model, loader, criterion, device):
             outputs = model(images)
 
             out = F.softmax(outputs, dim=1)
-            loss = L.lovasz_softmax(out, masks)
-            # loss = criterion(outputs, masks)
+            # loss = L.lovasz_softmax(out, masks)
+            loss = criterion(out, masks)
 
             total_loss += loss.item()
 
     return total_loss / len(loader)
 
 
-train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
+train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=8, shuffle=False)
 
 # Training loop
 num_epochs = 1000
@@ -133,12 +126,3 @@ for epoch in range(num_epochs):
         torch.save(model.state_dict(), f'V2_epoch{epoch}.pth')
 
 torch.save(model.state_dict(), 'V2.pth')
-
-# torch.save({
-#             'epoch': EPOCH,
-#             'model_state_dict': net.state_dict(),
-#             'optimizer_state_dict': optimizer.state_dict(),
-#             'loss': LOSS,
-#             }, PATH)
-
-print("Training completed!")

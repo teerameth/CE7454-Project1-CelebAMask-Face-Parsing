@@ -1,7 +1,6 @@
-from model import ConfigurableEnhancedLightweightDeepLabV3
-from utils import SegmentationDataset, LovaszSoftmax, count_parameters
+from model import MobileNetV3ASPP
+from utils import count_parameters
 import torch
-from torch.utils.data import DataLoader
 import os
 from PIL import Image
 import numpy as np
@@ -9,13 +8,14 @@ from tqdm import tqdm
 import wandb
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
-wandb.login(key="e89b5bd847e91325b77ad10f073be9fea692b536")
+from glob import glob
 
 api = wandb.Api()
-run = api.run("teerameth/CE7454-Project1-CelebAMask-Face-Parsing-V2/bzwql5yt")
+run = api.run("teerameth/CE7454-Project1-CelebAMask-Face-Parsing-V2/bzwql5yt")  # Best successful run (got highest mIOU)
 
 # Get the config used for the run
 config = run.config
+print(f"Run Condig:\nconfig")
 # Get the metrics logged during the run
 history = run.history()
 # Get the summary statistics
@@ -23,7 +23,9 @@ summary = run.summary
 # Get any files associated with the run
 files = run.files()
 
-# Apply binary search for backbone_width_multiplier that result in <= 2M trainable parameters
+#################################################################################################
+## Apply binary search for backbone_width_multiplier that result in <= 2M trainable parameters ##
+#################################################################################################
 multiplier = {'low': 0.0, 'high': 5.0}
 search_iter = 0
 _max_search_iter = 100  # Maximum tries
@@ -31,7 +33,7 @@ _max_param_count = 2e6
 
 while True:
     backbone_width_multiplier = (multiplier['low'] + multiplier['high']) / 2
-    model = ConfigurableEnhancedLightweightDeepLabV3(num_classes=19,
+    model = MobileNetV3ASPP(num_classes=19,
                                                      base_rate=config["base_atrous_rate"],
                                                      atrous_depth=config["artrous_depth"],
                                                      aspp_output_channels=config["aspp_output_channels"],
@@ -50,11 +52,11 @@ while True:
         backbone_width_multiplier = multiplier['low']
         break
 
-
+# Specify number of prediction classes and input image dimension
 num_class = 19
 h, w = 512, 512
 
-
+# Apply normalization (the same setting used during training)
 transform = A.Compose([
             A.Normalize(mean=(0.5193, 0.4179, 0.3638),
                         std=(0.2677, 0.2408, 0.2334),
@@ -64,13 +66,13 @@ transform = A.Compose([
             ToTensorV2(),
 ])
 
-pred_dir = 'dataset/test/test_pred'
-
+# Input image pattern
 img_patt='dataset/test/test_image/*.jpg'
-from glob import glob
+# Output directiry
+pred_dir = 'dataset/test/test_pred'
 img_list = glob(img_patt)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model = ConfigurableEnhancedLightweightDeepLabV3(num_classes=19,
+model = MobileNetV3ASPP(num_classes=19,
                                                  base_rate=config["base_atrous_rate"],
                                                  atrous_depth=config["artrous_depth"],
                                                  aspp_output_channels=config["aspp_output_channels"],
@@ -94,7 +96,6 @@ with torch.no_grad():
         output = np.array(outputs.cpu()).reshape((num_class, h, w))
         class_map = np.argmax(output, axis=0)   # Convert from prediction containing probability for each class (num_class, height, width) to class map (height, width) containing class id
 
-        # pred_viz = cv2.cvtColor(cmap[class_map], cv2.COLOR_RGB2BGR)
         save_path = os.path.join(pred_dir, f"{image_name}.png")
         img = Image.fromarray(np.array(class_map, dtype=np.uint8))
         img.save(save_path)

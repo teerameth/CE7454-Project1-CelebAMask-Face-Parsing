@@ -3,7 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.models.mobilenetv3 import mobilenet_v3_small
 
-# Simple Network for system testing
+#######################################
+## Simple Network for system testing ##
+#######################################
 class SimpleSegmentationNet(nn.Module):
     def __init__(self, num_classes=19):
         super(SimpleSegmentationNet, self).__init__()
@@ -26,9 +28,21 @@ class SimpleSegmentationNet(nn.Module):
 #####################################
 ## Custom Network for this project ##
 #####################################
-class ConfigurableEnhancedLightweightASPP(nn.Module):
+class ConfigurableASPP(nn.Module):
+    """ Configurable Atrous Spatial Pyramid Pooling (ASPP) module
+    Module designed for resampling a given feature layer with dilated convolution to adjust/control effective FoV, suitable for semantic segmentation task.
+    Attributes:
+        in_channels: number of input channels
+        out_channels: number of output channels
+        base_rate: base number for atrous rate
+        depth: atrous depth (number of multiplier used for extending atrous rate)
+        droupout_rate: probability to activate the dropouts
+    Examples:
+        With base_rate=4 and depth=3 --> atrous rates=[4, 8, 12]
+             base_rate=3 and depth=4 --> atrous rates=[3, 6, 9, 12]
+    """
     def __init__(self, in_channels, out_channels, base_rate=6, depth=3, dropout_rate=0.1):
-        super(ConfigurableEnhancedLightweightASPP, self).__init__()
+        super(ConfigurableASPP, self).__init__()
 
         atrous_rates = [base_rate * (i + 1) for i in range(depth)]
 
@@ -64,7 +78,7 @@ class ConfigurableEnhancedLightweightASPP(nn.Module):
                 nn.BatchNorm2d(out_channels),
                 nn.ReLU(inplace=True),
                 nn.Dropout2d(dropout_rate)
-            ) for rate in atrous_rates
+            ) for rate in atrous_rates  # Apply each atrous (dilation) rates
         ])
 
         self.global_avg_pool = nn.Sequential(
@@ -93,7 +107,10 @@ class ConfigurableEnhancedLightweightASPP(nn.Module):
         res = torch.cat(res, dim=1)
         return self.output_conv(res)
 
-class ConfigurableEnhancedLightweightDeepLabV3(nn.Module):
+class MobileNetV3ASPP(nn.Module):
+    """ Custom Network with MobileNetV3_small as backbone and configurable ASPP module
+
+    """
     def __init__(self,
                  num_classes,
                  base_rate=6,
@@ -102,27 +119,27 @@ class ConfigurableEnhancedLightweightDeepLabV3(nn.Module):
                  backbone_removed_layers=0,
                  backbone_width_multiplier=1.0,
                  dropout_rate=0.1):
-        super(ConfigurableEnhancedLightweightDeepLabV3, self).__init__()
+        super(MobileNetV3ASPP, self).__init__()
 
         self.num_classes = num_classes
 
-        # Use the smallest MobileNetV3 as backbone with width multiplier
+        # Use the smallest MobileNetV3 (without pretrained weight) as backbone template and specify the width multiplier
         mobilenet = mobilenet_v3_small(weights=None, width_mult=backbone_width_multiplier).features
 
+        ## Initialize our custom network
         self.backbone = nn.Sequential()
-        for i_layer in range(12-backbone_removed_layers):
+        for i_layer in range(12-backbone_removed_layers):   # Pick only first 6-12 layers from MobileNetV3_small architecture.
             self.backbone.add_module(str(i_layer), mobilenet[i_layer])
 
         # Get the number of features from the last layer of the backbone
         backbone_out_features = self.backbone[-1].out_channels
 
-        # Enhanced Lightweight ASPP module
-        aspp_output_channels = aspp_output_channels
-        self.aspp = ConfigurableEnhancedLightweightASPP(backbone_out_features,
-                                                        aspp_output_channels,
-                                                        base_rate,
-                                                        atrous_depth,
-                                                        dropout_rate)
+        # Configurable ASPP module
+        self.aspp = ConfigurableASPP(backbone_out_features,
+                                     aspp_output_channels,
+                                     base_rate,
+                                     atrous_depth,
+                                     dropout_rate)
 
         # Final classification layer
         self.classifier = nn.Sequential(

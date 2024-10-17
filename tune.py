@@ -1,63 +1,41 @@
+import sys
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from torch.optim.lr_scheduler import LambdaLR
-from torch.optim.lr_scheduler import _LRScheduler
 
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 import copy
 
-from triton.language import dtype
-
 import wandb
 from tqdm import tqdm
 import numpy as np
 
-from utils import SegmentationDataset, LovaszSoftmax, count_parameters
+from utils import SegmentationDataset, count_parameters
 import lovasz_losses as L
-from model import ConfigurableEnhancedLightweightDeepLabV3
+from model import MobileNetV3ASPP
 
-wandb.login(key="e89b5bd847e91325b77ad10f073be9fea692b536")
+import argparse
+
+
+# Initialize parser
+parser = argparse.ArgumentParser()
+
+# Adding optional argument
+parser.add_argument("-k", "--key", help = "WandB API key")
+
+# Read arguments from command line
+args = parser.parse_args()
+
+wandb.login(key=args.key)
+# wandb.login(key="xxxxxxxxxxxxxxxxxxxx") # Place WandB API key here
 
 _batch_size = 8
+criterion = L.lovasz_softmax
 
-# def get_lr_scheduler(optimizer, warmup_epochs, total_epochs, base_lr, scaled_lr):
-#     def lr_lambda(epoch):
-#         if epoch < warmup_epochs:
-#             return (scaled_lr - base_lr) * epoch / warmup_epochs + base_lr
-#         else:
-#             return scaled_lr - (epoch - warmup_epochs) * (scaled_lr - base_lr) / (total_epochs - warmup_epochs)
-#
-#     return LambdaLR(optimizer, lr_lambda)
-# class WarmupLinearScaledLR(LambdaLR):
-#     def __init__(self, optimizer, warmup_steps, total_steps, last_epoch=-1):
-#         self.warmup_steps = warmup_steps
-#         self.total_steps = total_steps
-#         super(WarmupLinearScaledLR, self).__init__(optimizer, self.lr_lambda, last_epoch=last_epoch)
-#
-#     def lr_lambda(self, step):
-#         if step < self.warmup_steps:
-#             return float(step) / float(max(1, self.warmup_steps))
-#         return max(0.0, float(self.total_steps - step) / float(max(1, self.total_steps - self.warmup_steps)))
-class CosineAnnealingLR(_LRScheduler):
-    def __init__(self, optimizer, T_max, eta_min=0, last_epoch=-1):
-        self.T_max = T_max
-        self.eta_min = eta_min
-        super(CosineAnnealingLR, self).__init__(optimizer, last_epoch)
-
-    def get_lr(self):
-        return [self.eta_min + (base_lr - self.eta_min) *
-                (1 + np.cos(np.pi * self.last_epoch / self.T_max)) / 2
-                for base_lr in self.base_lrs]
-
-
-def train_model(model, train_loader, val_loader, config):
+def train_model(model, train_loader, val_loader, criterion, config):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
-
-    # criterion = LovaszSoftmax()
 
     # Learning Rate Schedulers
     optimizer = torch.optim.Adam(model.parameters(), lr=config.base_lr)
@@ -82,8 +60,8 @@ def train_model(model, train_loader, val_loader, config):
             output = model(image)
 
             out = F.softmax(output, dim=1)
-            loss = L.lovasz_softmax(out, mask)
-            # loss = criterion(output, mask)
+            # loss = L.lovasz_softmax(out, mask)
+            loss = criterion(out, mask)
             loss.backward()
             optimizer.step()
 
@@ -99,11 +77,11 @@ def train_model(model, train_loader, val_loader, config):
                 output = model(image)
 
                 out = F.softmax(output, dim=1)
-                loss = L.lovasz_softmax(out, mask)
-                # loss = criterion(output, mask).item()
+                # loss = L.lovasz_softmax(out, mask)
+                loss = criterion(out, mask)
                 val_loss += loss.item()
 
-                ## Calculate mIOU ##
+                ## Calculate mIOU on validation dataset ##
                 for j in range(_batch_size):
                     gt_mask = np.array(mask.cpu()[j], dtype=np.float32)
                     pred_mask = np.array(output.cpu()[j], dtype=np.float32)
@@ -223,20 +201,21 @@ def grid_search():
         with wandb.init() as run:
             config = wandb.config
 
-            # Apply binary search for backbone_width_multiplier that result in <= 2M trainable parameters
+            # Apply binary search for backbone_width_multiplier that give the most but less than 2M trainable parameters
             multiplier = {'low': 0.0, 'high': 5.0}
             search_iter = 0
             _max_search_iter = 100  # Maximum tries
             _max_param_count  = 2e6
             while True:
                 backbone_width_multiplier = (multiplier['low'] + multiplier['high']) / 2
-                model = ConfigurableEnhancedLightweightDeepLabV3(num_classes=19,
-                                                                 base_rate=config.base_atrous_rate,
-                                                                 atrous_depth=config.artrous_depth,
-                                                                 aspp_output_channels=config.aspp_output_channels,
-                                                                 backbone_removed_layers=config.backbone_removed_layers,
-                                                                 backbone_width_multiplier=backbone_width_multiplier,
-                                                                 dropout_rate=config.dropout_rate)
+                # Propose the model with candidate backbone_width_multiplier
+                model = MobileNetV3ASPP(num_classes=19,
+                                        base_rate=config.base_atrous_rate,
+                                        atrous_depth=config.artrous_depth,
+                                        aspp_output_channels=config.aspp_output_channels,
+                                        backbone_removed_layers=config.backbone_removed_layers,
+                                        backbone_width_multiplier=backbone_width_multiplier,
+                                        dropout_rate=config.dropout_rate)
                 param_count = count_parameters(model)
                 print(f"param_count: {param_count}, {backbone_width_multiplier}")
                 if param_count > _max_param_count:
@@ -247,13 +226,14 @@ def grid_search():
                 if search_iter > _max_search_iter or 0 < (_max_param_count - param_count) < 10000 or multiplier['high'] - multiplier['low'] < 0.01:
                     backbone_width_multiplier = multiplier['low']
                     break
-            model = ConfigurableEnhancedLightweightDeepLabV3(num_classes=19,
-                                                             base_rate=config.base_atrous_rate,
-                                                             atrous_depth=config.artrous_depth,
-                                                             aspp_output_channels=config.aspp_output_channels,
-                                                             backbone_removed_layers=config.backbone_removed_layers,
-                                                             backbone_width_multiplier=backbone_width_multiplier,
-                                                             dropout_rate=config.dropout_rate)
+            # Summarize the model with optimized backbone_width_multiplier
+            model = MobileNetV3ASPP(num_classes=19,
+                                    base_rate=config.base_atrous_rate,
+                                    atrous_depth=config.artrous_depth,
+                                    aspp_output_channels=config.aspp_output_channels,
+                                    backbone_removed_layers=config.backbone_removed_layers,
+                                    backbone_width_multiplier=backbone_width_multiplier,
+                                    dropout_rate=config.dropout_rate)
             param_count = count_parameters(model)
             print(f"Param Count: {param_count}")
             wandb.log({"param_count": param_count,
@@ -307,7 +287,7 @@ def grid_search():
             train_loader = DataLoader(train_dataset, batch_size=_batch_size, shuffle=True)
             val_loader = DataLoader(val_dataset, batch_size=_batch_size, shuffle=False)
 
-            trained_model, best_val_loss = train_model(model, train_loader, val_loader, config)
+            trained_model, best_val_loss = train_model(model, train_loader, val_loader, criterion, config)
             wandb.log({"best_val_loss": best_val_loss})
             # Update best overall model if this run has the lowest validation loss
             if best_val_loss < best_overall_loss:

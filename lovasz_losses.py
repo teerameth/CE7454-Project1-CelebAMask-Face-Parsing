@@ -1,4 +1,5 @@
 """
+Source: https://github.com/bermanmaxim/LovaszSoftmax/blob/master/pytorch/lovasz_losses.py
 Lovasz-Softmax and Jaccard hinge loss in PyTorch
 Maxim Berman 2018 ESAT-PSI KU Leuven (MIT License)
 """
