@@ -17,7 +17,7 @@ CE7454-Project1-CelebAMask-Face-Parsing
 └───dataset
 │   │   evaluate.py - Provided mIOU calculation script from CE7454 class
 │   │   dataset_mean_std.py - Calculate Mean and Standard Deviation of input image (from both training & validation dataset)
-│   │
+│   │   count_label.py - Count each label from both train & val dataset
 │   │───train
 │   │   │───train_image - Training dataset image
 │   │   │       0.jpg
@@ -64,9 +64,25 @@ CE7454-Project1-CelebAMask-Face-Parsing
 └───images - Images from README.md
 ```
 
+## How To RUN
+### Prepare Python virtual environment
+- Get [anaconda3](https://www.anaconda.com/download)
+- create new virtual environment called "ce7454" and install required libraries.
 ```shell
-python tune.py -k="api_key"
+conda create -n ce7454
+conda activate ce7454
+# Install PyTorch with GPU support https://pytorch.org/get-started/locally/
+conda install pytorch torchvision pytorch-cuda=12.4 -c pytorch -c nvidia
+pip install -r requirements.txt
 ```
 
-## [WandB Interactive Dashboard](https://wandb.ai/teerameth/CE7454-Project1-CelebAMask-Face-Parsing-V2?nw=nwuserteerameth)
+### Prepare Hyper-parameters Tuning
+- Get WandB api key from [it's website](https://docs.wandb.ai/quickstart/)
+- Start Hyperparameter Tuning
+```shell
+# Please specify your api key
+python tune.py -k=${api_key}
+```
+
+Succeed hyperparameters tuning also provided at [WandB Interactive Dashboard](https://wandb.ai/teerameth/CE7454-Project1-CelebAMask-Face-Parsing-V2?nw=nwuserteerameth)
 ![wandb_dashboard.png](images/wandb_dashboard.png)
