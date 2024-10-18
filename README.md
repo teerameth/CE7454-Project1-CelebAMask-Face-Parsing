@@ -76,12 +76,29 @@ conda install pytorch torchvision pytorch-cuda=12.4 -c pytorch -c nvidia
 pip install -r requirements.txt
 ```
 
+### Normal Training
+```shell
+python train.py
+```
+
 ### Prepare Hyper-parameters Tuning
-- Get WandB api key from [it's website](https://docs.wandb.ai/quickstart/)
+- Get api key from [WandB website](https://docs.wandb.ai/quickstart/)
 - Start Hyperparameter Tuning
 ```shell
 # Please specify your api key
 python tune.py -k=${api_key}
+```
+
+### Inference Best Model on Validation dataset
+```shell
+python val.py       # Parameters hardcoded in to script
+python val_wandb.py # Parameters loaded from WandB API
+```
+
+### Inference Best Model on Test dataset
+```shell
+python test.py        # Parameters hardcoded in to script
+python test_wandb.py  # Parameters loaded from WandB API
 ```
 
 Succeed hyperparameters tuning also provided at [WandB Interactive Dashboard](https://wandb.ai/teerameth/CE7454-Project1-CelebAMask-Face-Parsing-V2?nw=nwuserteerameth)
