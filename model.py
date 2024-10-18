@@ -41,10 +41,10 @@ class ConfigurableASPP(nn.Module):
         With base_rate=4 and depth=3 --> atrous rates=[4, 8, 12]
              base_rate=3 and depth=4 --> atrous rates=[3, 6, 9, 12]
     """
-    def __init__(self, in_channels, out_channels, base_rate=6, depth=3, dropout_rate=0.1):
+    def __init__(self, in_channels, out_channels, base_rate=6, atrous_depth=3, dropout_rate=0.1):
         super(ConfigurableASPP, self).__init__()
 
-        atrous_rates = [base_rate * (i + 1) for i in range(depth)]
+        atrous_rates = [base_rate * (i + 1) for i in range(atrous_depth)]
 
         self.conv1 = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, 1, bias=False),
@@ -63,7 +63,7 @@ class ConfigurableASPP(nn.Module):
             nn.Dropout2d(dropout_rate)
         )
 
-        self.branches = nn.ModuleList([
+        self.atrous_branches = nn.ModuleList([
             nn.Sequential(
                 nn.Conv2d(in_channels, in_channels, 3, padding=rate, dilation=rate, groups=in_channels, bias=False),
                 nn.BatchNorm2d(in_channels),
@@ -90,7 +90,7 @@ class ConfigurableASPP(nn.Module):
         )
 
         self.output_conv = nn.Sequential(
-            nn.Conv2d(out_channels * (depth + 3), out_channels, 1, bias=False),
+            nn.Conv2d(out_channels * (atrous_depth + 3), out_channels, 1, bias=False),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
             nn.Dropout2d(dropout_rate)
@@ -98,7 +98,7 @@ class ConfigurableASPP(nn.Module):
 
     def forward(self, x):
         res = [self.conv1(x), self.conv2(x)]
-        res.extend([branch(x) for branch in self.branches])
+        res.extend([branch(x) for branch in self.atrous_branches])
 
         global_features = self.global_avg_pool(x)
         global_features = F.interpolate(global_features, size=x.shape[2:], mode='bilinear', align_corners=False)
