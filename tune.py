@@ -65,8 +65,6 @@ def train_model(model, train_loader, val_loader, criterion, config):
             loss.backward()
             optimizer.step()
 
-        scheduler.step()
-
         model.eval()
         val_loss = 0
         area_intersect_all = np.zeros(19)
@@ -95,6 +93,8 @@ def train_model(model, train_loader, val_loader, criterion, config):
                         area_union_all[cls_idx] += area_union
 
         val_loss /= len(val_loader)
+
+        scheduler.step(metrics=val_loss) if config.scheduler == 'Plateau' else scheduler.step()
 
         ## Calculate mIOU ##
         iou_all = area_intersect_all / area_union_all * 100.0

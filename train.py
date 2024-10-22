@@ -67,15 +67,25 @@ def train_model(model, train_loader, val_loader, criterion, config):
 
     # Learning Rate Schedulers
     optimizer = torch.optim.Adam(model.parameters(), lr=config["base_lr"])
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, config["epochs"])
-    
+    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, config["epochs"])
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,
+                                                           mode='min',
+                                                           factor=0.1,
+                                                           patience=10,
+                                                           threshold=0.0001,
+                                                           threshold_mode='rel',
+                                                           cooldown=0,
+                                                           min_lr=0,
+                                                           eps=1e-08,
+                                                           verbose='deprecated')
+
     best_model_wts = copy.deepcopy(model.state_dict())
     best_loss = float('inf')
     no_improve_epochs = 0
 
     for epoch in range(config["epochs"]):
         model.train()
-        for batch_idx, (image, mask) in tqdm(enumerate(train_loader)):
+        for image, mask in tqdm(train_loader):
             image, mask = image.to(device), mask.to(device)
             optimizer.zero_grad()
             output = model(image)
@@ -86,14 +96,13 @@ def train_model(model, train_loader, val_loader, criterion, config):
             loss.backward()
             optimizer.step()
 
-        scheduler.step()
 
         model.eval()
         val_loss = 0
         area_intersect_all = np.zeros(19)
         area_union_all = np.zeros(19)
         with torch.no_grad():
-            for image, mask in val_loader:
+            for image, mask in tqdm(val_loader):
                 image, mask = image.to(device), mask.to(device)
                 output = model(image)
 
@@ -116,6 +125,8 @@ def train_model(model, train_loader, val_loader, criterion, config):
                         area_union_all[cls_idx] += area_union
 
         val_loss /= len(val_loader)
+
+        scheduler.step(metrics=val_loss)
 
         ## Calculate mIOU ##
         iou_all = area_intersect_all / area_union_all * 100.0
